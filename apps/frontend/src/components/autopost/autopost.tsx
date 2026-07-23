@@ -137,12 +137,36 @@ const details = object().shape({
   active: boolean().required(),
   addPicture: boolean().required(),
   generateContent: boolean().required(),
+  generateVideo: boolean().required(),
+  videoType: string(),
+  videoOutput: string(),
   integrations: array().of(
     object().shape({
       id: string().required(),
     })
   ),
 });
+const parseAutopostIntegrations = (value?: string) => {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    if (Array.isArray(parsed)) {
+      return {
+        integrations: parsed,
+        videoGeneration: null,
+      };
+    }
+
+    return {
+      integrations: parsed?.integrations || [],
+      videoGeneration: parsed?.videoGeneration || null,
+    };
+  } catch (e) {
+    return {
+      integrations: [],
+      videoGeneration: null,
+    };
+  }
+};
 const getOptions = (t: (key: string, fallback: string) => string) => [
   {
     label: t('all_integrations', 'All integrations'),
@@ -183,8 +207,9 @@ export const AddOrEditWebhook: FC<{
   const options = getOptions(t);
   const optionsChoose = getOptionsChoose(t);
   const postImmediately = getPostImmediately(t);
+  const parsedIntegrations = parseAutopostIntegrations(data?.integrations);
   const [allIntegrations, setAllIntegrations] = useState(
-    (JSON.parse(data?.integrations || '[]')?.length || 0) > 0
+    (parsedIntegrations.integrations?.length || 0) > 0
       ? options[1]
       : options[0]
   );
@@ -207,10 +232,14 @@ export const AddOrEditWebhook: FC<{
       generateContent: data?.hasOwnProperty?.('generateContent')
         ? data?.generateContent
         : true,
-      integrations: JSON.parse(data?.integrations || '[]') || [],
+      generateVideo: !!parsedIntegrations.videoGeneration?.enabled,
+      videoType: parsedIntegrations.videoGeneration?.type || 'veo3',
+      videoOutput: parsedIntegrations.videoGeneration?.output || 'vertical',
+      integrations: parsedIntegrations.integrations || [],
     },
   });
   const generateContent = form.watch('generateContent');
+  const generateVideo = form.watch('generateVideo');
   const content = form.watch('content');
   const url = form.watch('url');
   const syncLast = form.watch('syncLast');
@@ -249,6 +278,15 @@ export const AddOrEditWebhook: FC<{
               }
             : {}),
           ...values,
+          videoGeneration: !values.generateVideo
+            ? {
+                enabled: false,
+              }
+            : {
+                enabled: true,
+                type: values.videoType || 'veo3',
+                output: values.videoOutput || 'vertical',
+              },
           ...(!syncLast
             ? {
                 lastUrl,
@@ -384,6 +422,38 @@ export const AddOrEditWebhook: FC<{
                 </option>
               ))}
             </Select>
+            <Select
+              label="Generate Video?"
+              translationKey="label_generate_video"
+              {...form.register('generateVideo', {
+                setValueAs: (value) => value === 'true' || value === true,
+              })}
+            >
+              {optionsChoose.map((option) => (
+                <option key={String(option.value)} value={String(option.value)}>
+                  {option.label}
+                </option>
+              ))}
+            </Select>
+            {generateVideo && (
+              <>
+                <Select
+                  label="Video model"
+                  translationKey="label_video_model"
+                  {...form.register('videoType')}
+                >
+                  <option value="veo3">Veo3</option>
+                </Select>
+                <Select
+                  label="Video output"
+                  translationKey="label_video_output"
+                  {...form.register('videoOutput')}
+                >
+                  <option value="vertical">{t('vertical', 'Vertical')}</option>
+                  <option value="horizontal">{t('horizontal', 'Horizontal')}</option>
+                </Select>
+              </>
+            )}
             <Select
               value={allIntegrations.value}
               name="integrations"

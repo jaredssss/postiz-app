@@ -3,6 +3,21 @@ import { Injectable } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import { AutopostDto } from '@gitroom/nestjs-libraries/dtos/autopost/autopost.dto';
 
+const serializeAutoPostIntegrations = (body: AutopostDto) => {
+  if (!body.videoGeneration?.enabled) {
+    return JSON.stringify(body.integrations);
+  }
+
+  return JSON.stringify({
+    integrations: body.integrations,
+    videoGeneration: {
+      enabled: true,
+      type: body.videoGeneration?.type || 'veo3',
+      output: body.videoGeneration?.output || 'vertical',
+    },
+  });
+};
+
 @Injectable()
 export class AutopostRepository {
   constructor(private _autoPost: PrismaRepository<'autoPost'>) {}
@@ -70,6 +85,7 @@ export class AutopostRepository {
   }
 
   async createAutopost(orgId: string, body: AutopostDto, id?: string) {
+    const integrations = serializeAutoPostIntegrations(body);
     const { id: newId, active } = await this._autoPost.model.autoPost.upsert({
       where: {
         id: id || uuidv4(),
@@ -79,7 +95,7 @@ export class AutopostRepository {
         organizationId: orgId,
         url: body.url,
         title: body.title,
-        integrations: JSON.stringify(body.integrations),
+        integrations,
         active: body.active,
         content: body.content,
         generateContent: body.generateContent,
@@ -91,7 +107,7 @@ export class AutopostRepository {
       update: {
         url: body.url,
         title: body.title,
-        integrations: JSON.stringify(body.integrations),
+        integrations,
         active: body.active,
         content: body.content,
         generateContent: body.generateContent,
