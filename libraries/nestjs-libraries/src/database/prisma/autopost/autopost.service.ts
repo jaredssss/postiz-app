@@ -6,7 +6,6 @@ import { END, START, StateGraph } from '@langchain/langgraph';
 import { AutoPost, Integration } from '@prisma/client';
 import { BaseMessage } from '@langchain/core/messages';
 import striptags from 'striptags';
-import { ChatOpenAI, DallEAPIWrapper } from '@langchain/openai';
 import { JSDOM } from 'jsdom';
 import { z } from 'zod';
 import { ChatPromptTemplate } from '@langchain/core/prompts';
@@ -16,10 +15,29 @@ import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/in
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { TemporalService } from 'nestjs-temporal-core';
 import { TypedSearchAttributes } from '@temporalio/common';
+import { MediaService } from '@gitroom/nestjs-libraries/database/prisma/media/media.service';
+import { OrganizationService } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.service';
+import { VideoDto } from '@gitroom/nestjs-libraries/dtos/videos/video.dto';
+import {
+  createImageModel,
+  createTextModel,
+  isPaidAiBlocked,
+} from '@gitroom/nestjs-libraries/openai/ai.config';
 import {
   organizationId,
 } from '@gitroom/nestjs-libraries/temporal/temporal.search.attribute';
 const parser = new Parser();
+
+interface AutoPostVideoGenerationConfig {
+  enabled: boolean;
+  type: string;
+  output: 'vertical' | 'horizontal';
+}
+
+interface AutoPostConfig {
+  integrations: { id: string }[];
+  videoGeneration: AutoPostVideoGenerationConfig | null;
+}
 
 interface WorkflowChannelsState {
   messages: BaseMessage[];
@@ -27,6 +45,8 @@ interface WorkflowChannelsState {
   body: AutoPost;
   description: string;
   image: string;
+  video: string;
+  videoGeneration: AutoPostVideoGenerationConfig | null;
   id: string;
   load: {
     date: string;
@@ -35,16 +55,8 @@ interface WorkflowChannelsState {
   };
 }
 
-const model = new ChatOpenAI({
-  apiKey: process.env.OPENAI_API_KEY || 'sk-proj-',
-  model: 'gpt-4.1',
-  temperature: 0.7,
-});
-
-const dalle = new DallEAPIWrapper({
-  apiKey: process.env.OPENAI_API_KEY || 'sk-proj-',
-  model: 'chatgpt-image-latest',
-});
+const model = createTextModel();
+const dalle = createImageModel();
 
 const generateContent = z.object({
   socialMediaPostContent: z
@@ -64,7 +76,9 @@ export class AutopostService {
     private _autopostsRepository: AutopostRepository,
     private _temporalService: TemporalService,
     private _integrationService: IntegrationService,
-    private _postsService: PostsService
+    private _postsService: PostsService,
+    private _mediaService: MediaService,
+    private _organizationService: OrganizationService
   ) {}
 
   async stopAll(org: string) {
@@ -177,6 +191,8 @@ export class AutopostService {
         description: null,
         load: null,
         image: null,
+        video: null,
+        videoGeneration: null,
         integrations: null,
         id: null,
       },
@@ -196,6 +212,72 @@ export class AutopostService {
     } catch (err) {
       return '';
     }
+  }
+
+  private parseAutopostConfig(rawIntegrations: string): AutoPostConfig {
+    try {
+      const parsed = JSON.parse(rawIntegrations || '[]');
+      if (Array.isArray(parsed)) {
+        return {
+          integrations: parsed,
+          videoGeneration: null,
+        };
+      }
+
+      return {
+        integrations: Array.isArray(parsed.integrations)
+          ? parsed.integrations
+          : [],
+        videoGeneration: parsed.videoGeneration?.enabled
+          ? {
+              enabled: true,
+              type: parsed.videoGeneration?.type || 'veo3',
+              output: parsed.videoGeneration?.output || 'vertical',
+            }
+          : null,
+      };
+    } catch (err) {
+      return {
+        integrations: [],
+        videoGeneration: null,
+      };
+    }
+  }
+
+  private async passGuardrails(orgId: string) {
+    const maxPerDay = Number(process.env.AUTOPOST_MAX_POSTS_PER_DAY || '48');
+    const quietHours = (process.env.AUTOPOST_QUIET_HOURS_UTC || '').trim();
+
+    if (maxPerDay > 0) {
+      const count = await this._postsService.countPostsFromDay(
+        orgId,
+        dayjs().startOf('day').toDate()
+      );
+      if (count >= maxPerDay) {
+        return false;
+      }
+    }
+
+    if (quietHours) {
+      const parts = quietHours.split('-').map((p) => +p.trim());
+      if (
+        parts.length === 2 &&
+        Number.isInteger(parts[0]) &&
+        Number.isInteger(parts[1])
+      ) {
+        const hour = new Date().getUTCHours();
+        const [start, end] = parts;
+        if (start <= end) {
+          if (hour >= start && hour < end) {
+            return false;
+          }
+        } else if (hour >= start || hour < end) {
+          return false;
+        }
+      }
+    }
+
+    return true;
   }
 
   async generateDescription(state: WorkflowChannelsState) {
@@ -242,6 +324,10 @@ export class AutopostService {
   }
 
   async generatePicture(state: WorkflowChannelsState) {
+    if (!dalle || isPaidAiBlocked()) {
+      return { ...state };
+    }
+
     const structuredOutput = model.withStructuredOutput(dallePrompt);
     const { generatedTextToBeSentToDallE } =
       await ChatPromptTemplate.fromTemplate(
@@ -260,6 +346,40 @@ export class AutopostService {
     const image = await dalle.invoke(generatedTextToBeSentToDallE);
 
     return { ...state, image };
+  }
+
+  async generateVideo(state: WorkflowChannelsState) {
+    if (!state.videoGeneration?.enabled) {
+      return { ...state };
+    }
+
+    const organization = await this._organizationService.getOrgById(
+      state.integrations[0].organizationId
+    );
+    if (!organization) {
+      return { ...state };
+    }
+
+    const customParams = {
+      prompt: state.load.description || state.description,
+      images: [],
+    };
+
+    const payload: VideoDto = {
+      type: state.videoGeneration.type,
+      output: state.videoGeneration.output,
+      customParams,
+    };
+
+    const generated = await this._mediaService.generateVideo(
+      organization,
+      payload
+    );
+
+    return {
+      ...state,
+      video: generated.path,
+    };
   }
 
   async schedulePost(state: WorkflowChannelsState) {
@@ -290,13 +410,13 @@ export class AutopostService {
               state.description.replace(/\n/g, '\n\n') +
               '\n\n' +
               state.load.url,
-            image: !state.image
+            image: !state.image && !state.video
               ? []
               : [
                   {
                     id: makeId(10),
                     name: makeId(10),
-                    path: state.image,
+                    path: state.video || state.image,
                     organizationId: state.integrations[0].organizationId,
                   },
                 ],
@@ -316,6 +436,10 @@ export class AutopostService {
       return;
     }
 
+    if (!(await this.passGuardrails(getPost.organizationId))) {
+      return;
+    }
+
     const load = await this.loadXML(getPost.url);
     if (!load.success || load.url === getPost.lastUrl) {
       return;
@@ -325,7 +449,8 @@ export class AutopostService {
       getPost.organizationId
     );
 
-    const parseIntegrations = JSON.parse(getPost.integrations || '[]') || [];
+    const autoPostConfig = this.parseAutopostConfig(getPost.integrations || '');
+    const parseIntegrations = autoPostConfig.integrations;
     const neededIntegrations = integrations.filter((i) =>
       parseIntegrations.some((ii: any) => ii.id === i.id)
     );
@@ -340,6 +465,7 @@ export class AutopostService {
     const workflow = state
       .addNode('generate-description', this.generateDescription.bind(this))
       .addNode('generate-picture', this.generatePicture.bind(this))
+      .addNode('generate-video', this.generateVideo.bind(this))
       .addNode('schedule-post', this.schedulePost.bind(this))
       .addNode('update-url', this.updateUrl.bind(this))
       .addEdge(START, 'generate-description')
@@ -349,6 +475,9 @@ export class AutopostService {
           if (!state.description) {
             return 'schedule-post';
           }
+          if (state.videoGeneration?.enabled) {
+            return 'generate-video';
+          }
           if (state.body.addPicture) {
             return 'generate-picture';
           }
@@ -356,6 +485,7 @@ export class AutopostService {
         }
       )
       .addEdge('generate-picture', 'schedule-post')
+      .addEdge('generate-video', 'schedule-post')
       .addEdge('schedule-post', 'update-url')
       .addEdge('update-url', END);
 
@@ -366,6 +496,7 @@ export class AutopostService {
       body: getPost,
       load,
       integrations: integrationsToSend,
+      videoGeneration: autoPostConfig.videoGeneration,
     });
   }
 }

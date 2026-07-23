@@ -2,6 +2,7 @@ import {
   IsArray,
   IsBoolean,
   IsDefined,
+  IsIn,
   IsOptional,
   IsString,
   IsUrl,
@@ -14,6 +15,20 @@ export class Integrations {
   @IsString()
   @IsDefined()
   id: string;
+}
+
+export class AutoPostVideoGenerationDto {
+  @IsBoolean()
+  @IsOptional()
+  enabled?: boolean;
+
+  @IsString()
+  @IsOptional()
+  type?: string;
+
+  @IsIn(['vertical', 'horizontal'])
+  @IsOptional()
+  output?: 'vertical' | 'horizontal';
 }
 
 export class AutopostDto {
@@ -61,4 +76,9 @@ export class AutopostDto {
   @Type(() => Integrations)
   @ValidateNested({ each: true })
   integrations: Integrations[];
+
+  @Type(() => AutoPostVideoGenerationDto)
+  @ValidateNested()
+  @IsOptional()
+  videoGeneration?: AutoPostVideoGenerationDto;
 }
