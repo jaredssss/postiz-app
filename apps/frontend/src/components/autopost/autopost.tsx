@@ -27,11 +27,11 @@ export const Autopost: FC = () => {
   }, []);
   const { data, mutate } = useSWR('autopost', list);
   const addWebhook = useCallback(
-    (data?: any) => () => {
+    (data?: any, quickSetup?: boolean) => () => {
       modal.openModal({
         title: data ? t('edit_autopost', 'Edit Autopost') : t('add_autopost_title', 'Add Autopost'),
         withCloseButton: true,
-        children: <AddOrEditWebhook data={data} reload={mutate} />,
+        children: <AddOrEditWebhook data={data} reload={mutate} quickSetup={quickSetup} />,
       });
     },
     []
@@ -116,12 +116,14 @@ export const Autopost: FC = () => {
             </div>
           )}
           <div>
-            <Button
-              onClick={addWebhook()}
-              className={clsx((data?.length || 0) > 0 && 'my-[16px]')}
-            >
-              {t('add_an_autopost', 'Add an autopost')}
-            </Button>
+            <div className={clsx('flex gap-[10px]', (data?.length || 0) > 0 && 'my-[16px]')}>
+              <Button onClick={addWebhook()}>
+                {t('add_an_autopost', 'Add an autopost')}
+              </Button>
+              <Button onClick={addWebhook(undefined, true)}>
+                {t('quick_setup_immediate_autopost', 'Quick Setup (Immediate Autopost)')}
+              </Button>
+            </div>
           </div>
         </div>
       </div>
@@ -200,8 +202,9 @@ const getPostImmediately = (t: (key: string, fallback: string) => string) => [
 export const AddOrEditWebhook: FC<{
   data?: any;
   reload: () => void;
+  quickSetup?: boolean;
 }> = (props) => {
-  const { data, reload } = props;
+  const { data, reload, quickSetup } = props;
   const fetch = useFetch();
   const t = useT();
   const options = getOptions(t);
@@ -217,13 +220,14 @@ export const AddOrEditWebhook: FC<{
   const toast = useToaster();
   const [valid, setValid] = useState(data?.url || '');
   const [lastUrl, setLastUrl] = useState(data?.lastUrl || '');
+  const isQuickSetup = !data?.id && quickSetup;
   const form = useForm({
     resolver: yupResolver(details),
     values: {
-      title: data?.title || '',
+      title: data?.title || (isQuickSetup ? t('quick_setup_title', 'Immediate Autopost') : ''),
       content: data?.content || '',
-      onSlot: data?.onSlot || false,
-      syncLast: data?.syncLast || false,
+      onSlot: data?.onSlot ?? false,
+      syncLast: data?.syncLast ?? false,
       url: data?.url || '',
       // eslint-disable-next-line no-prototype-builtins
       active: data?.hasOwnProperty?.('active') ? data?.active : true,
@@ -244,6 +248,11 @@ export const AddOrEditWebhook: FC<{
   const url = form.watch('url');
   const syncLast = form.watch('syncLast');
   const integrations = form.watch('integrations');
+  const canSubmit =
+    valid === url &&
+    (syncLast || !!lastUrl) &&
+    !!form.formState.isValid &&
+    (allIntegrations.value !== 'specific' || !!integrations?.length);
   const integration = useCallback(async () => {
     return (await fetch('/integrations/list')).json();
   }, []);
@@ -309,6 +318,13 @@ export const AddOrEditWebhook: FC<{
   );
   const sendTest = useCallback(async () => {
     const url = form.getValues('url');
+    if (!url) {
+      toast.show(
+        t('enter_rss_url_before_test', 'Please enter an RSS URL before running Send Test'),
+        'warning'
+      );
+      return;
+    }
     try {
       const { success, url: newUrl } = await (
         await fetch(`/autopost/send?url=${encodeURIComponent(url)}`, {
@@ -327,7 +343,10 @@ export const AddOrEditWebhook: FC<{
       setValid(url);
       setLastUrl(newUrl);
     } catch (e: any) {
-      /** empty **/
+      toast.show(
+        t('rss_validation_failed_try_again', 'Could not validate RSS feed. Please try again'),
+        'warning'
+      );
     }
   }, []);
 
@@ -479,20 +498,9 @@ export const AddOrEditWebhook: FC<{
               />
             )}
             <div className="flex gap-[10px]">
-              {valid === url && (syncLast || !!lastUrl) && (
-                <Button
-                  type="submit"
-                  className="mt-[24px]"
-                  disabled={
-                    valid !== url ||
-                    !form.formState.isValid ||
-                    (allIntegrations.value === 'specific' &&
-                      !integrations?.length)
-                  }
-                >
-                  {t('save', 'Save')}
-                </Button>
-              )}
+              <Button type="submit" className="mt-[24px]" disabled={!canSubmit}>
+                {t('save', 'Save')}
+              </Button>
               <Button
                 type="button"
                 className="mt-[24px]"
@@ -506,6 +514,14 @@ export const AddOrEditWebhook: FC<{
                 {t('send_test', 'Send Test')}
               </Button>
             </div>
+            {!canSubmit && (
+              <div className="mt-[8px] text-[12px] text-customColor18">
+                {t(
+                  'send_test_before_save_hint',
+                  'Run Send Test and wait for RSS valid before saving'
+                )}
+              </div>
+            )}
           </div>
         </div>
       </form>
