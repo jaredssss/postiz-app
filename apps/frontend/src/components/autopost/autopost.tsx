@@ -34,7 +34,7 @@ export const Autopost: FC = () => {
         children: <AddOrEditWebhook data={data} reload={mutate} quickSetup={quickSetup} />,
       });
     },
-    []
+    [modal, mutate, t]
   );
   const deleteHook = useCallback(
     (data: any) => async () => {
@@ -120,7 +120,7 @@ export const Autopost: FC = () => {
               <Button onClick={addWebhook()}>
                 {t('add_an_autopost', 'Add an autopost')}
               </Button>
-              <Button onClick={addWebhook(undefined, true)}>
+              <Button secondary={true} onClick={addWebhook(undefined, true)}>
                 {t('quick_setup_immediate_autopost', 'Quick Setup (Immediate Autopost)')}
               </Button>
             </div>
